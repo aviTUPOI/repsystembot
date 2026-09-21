@@ -1,0 +1,6 @@
+aiogram
+aiosqlite
+apscheduler
+pytz
+aiohttp
+
