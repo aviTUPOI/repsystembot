@@ -1,10 +1,10 @@
-import os
-from aiohttp import web
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 import pytz
 import aiosqlite
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
@@ -26,7 +26,6 @@ dp = Dispatcher()
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        # Таблица пользователей
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -37,7 +36,6 @@ async def init_db():
                 last_vote_at DATETIME
             )
         """)
-        # Таблица истории голосов (репутации)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS reputation_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +60,6 @@ async def get_or_create_user(user: types.User):
                 )
                 await db.commit()
             else:
-                # Обновляем username и full_name на случай, если пользователь их изменил
                 username = user.username.lower() if user.username else None
                 await db.execute(
                     "UPDATE users SET username = ?, full_name = ? WHERE user_id = ?",
@@ -93,20 +90,16 @@ async def get_reputation_stats(user_id: int):
     month_ago = now - timedelta(days=30)
 
     async with aiosqlite.connect(DB_NAME) as db:
-        # Всего
         async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ?", (user_id,)) as c:
             total = (await c.fetchone())[0]
 
-        # За день
-        async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ? AND created_at >= ?", (user_id, day_ago)):
+        async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ? AND created_at >= ?", (user_id, day_ago)) as c:
             daily = (await c.fetchone())[0]
 
-        # За неделю
-        async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ? AND created_at >= ?", (user_id, week_ago)):
+        async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ? AND created_at >= ?", (user_id, week_ago)) as c:
             weekly = (await c.fetchone())[0]
 
-        # За месяц
-        async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ? AND created_at >= ?", (user_id, month_ago)):
+        async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ? AND created_at >= ?", (user_id, month_ago)) as c:
             monthly = (await c.fetchone())[0]
 
     return total, daily, weekly, monthly
@@ -142,7 +135,6 @@ def format_user_info(user_row, total, daily, weekly, monthly) -> str:
 
 
 async def resolve_target_user(message: types.Message, command: CommandObject):
-    """Определяет целевого пользователя через Reply или @username."""
     if message.reply_to_message:
         target_tg_user = message.reply_to_message.from_user
         await get_or_create_user(target_tg_user)
@@ -267,9 +259,7 @@ async def process_rep(message: types.Message, command: CommandObject, delta: int
     now = datetime.now(pytz.utc)
 
     async with aiosqlite.connect(DB_NAME) as db:
-        # Списываем голос
         await db.execute("UPDATE users SET voices = voices - 1, last_vote_at = ? WHERE user_id = ?", (now, voter["user_id"]))
-        # Записываем изменения репутации
         await db.execute(
             "INSERT INTO reputation_logs (from_user_id, to_user_id, value, created_at) VALUES (?, ?, ?, ?)",
             (voter["user_id"], target["user_id"], delta, now)
@@ -294,11 +284,9 @@ async def cmd_minusrep(message: types.Message, command: CommandObject):
 # ==================== КРОН-ЗАДАЧА (12:00 МСК) ====================
 
 async def daily_voice_distribution():
-    """Ежедневное начисление голосов активным пользователям в 12:00 по МСК."""
     week_ago = datetime.now(pytz.utc) - timedelta(days=7)
     
     async with aiosqlite.connect(DB_NAME) as db:
-        # Выдаем голос тем, кто проголосовал хотя бы 1 раз за последнюю неделю
         await db.execute(
             "UPDATE users SET voices = voices + 1 WHERE last_vote_at IS NOT NULL AND last_vote_at >= ?",
             (week_ago,)
@@ -306,20 +294,16 @@ async def daily_voice_distribution():
         await db.commit()
 
 
-# ==================== ЗАПУСК ====================
+# ==================== ЗАПУСК ВЕБ-СЕРВЕРА И БОТА ====================
+
 async def handle(request):
     return web.Response(text="Bot is alive!")
-  
+
+
 async def main():
     await init_db()
 
-    # Настройка планировщика на 12:00 по МСК
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(daily_voice_distribution, trigger="cron", hour=12, minute=0)
-    scheduler.start()
-
-    logging.info("Бот запущен!")
-      app = web.Application()
+    app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -327,8 +311,14 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(daily_voice_distribution, trigger="cron", hour=12, minute=0)
+    scheduler.start()
+
+    logging.info("Бот запущен!")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
-  
+    
