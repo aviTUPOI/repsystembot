@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import html
 from datetime import datetime, timedelta
 import pytz
 import aiosqlite
@@ -9,7 +10,6 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
-from aiogram.utils.markdown import html_quote
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Токен бота
@@ -33,7 +33,7 @@ async def init_db():
                 full_name TEXT,
                 description TEXT DEFAULT 'Описание не установлено',
                 voices INTEGER DEFAULT 1,
-                last_vote_at DATETIME
+                last_vote_at TEXT
             )
         """)
         await db.execute("""
@@ -42,7 +42,7 @@ async def init_db():
                 from_user_id INTEGER,
                 to_user_id INTEGER,
                 value INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
         await db.commit()
@@ -85,9 +85,9 @@ async def get_user_by_username(username: str):
 
 async def get_reputation_stats(user_id: int):
     now = datetime.now(pytz.utc)
-    day_ago = now - timedelta(days=1)
-    week_ago = now - timedelta(days=7)
-    month_ago = now - timedelta(days=30)
+    day_ago = (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    month_ago = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
 
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT COALESCE(SUM(value), 0) FROM reputation_logs WHERE to_user_id = ?", (user_id,)) as c:
@@ -107,7 +107,7 @@ async def get_reputation_stats(user_id: int):
 
 async def get_votes_today(from_id: int, to_id: int) -> int:
     now = datetime.now(pytz.utc)
-    start_of_day = datetime(now.year, now.month, now.day, tzinfo=pytz.utc)
+    start_of_day = datetime(now.year, now.month, now.day, tzinfo=pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
@@ -122,9 +122,9 @@ async def get_votes_today(from_id: int, to_id: int) -> int:
 
 def format_user_info(user_row, total, daily, weekly, monthly) -> str:
     user_id = user_row["user_id"]
-    name = html_quote(user_row["full_name"])
+    name = html.escape(user_row["full_name"])
     user_link = f'<a href="tg://user?id={user_id}">{name}</a>'
-    desc = html_quote(user_row["description"])
+    desc = html.escape(user_row["description"])
 
     return (
         f"информация о {user_link}\n\n"
@@ -231,7 +231,7 @@ async def cmd_sendvoice(message: types.Message, command: CommandObject):
         await db.execute("UPDATE users SET voices = voices + 1 WHERE user_id = ?", (target["user_id"],))
         await db.commit()
 
-    target_name = html_quote(target["full_name"])
+    target_name = html.escape(target["full_name"])
     await message.reply(f"Вы успешно передали 1 голос пользователю {target_name}!", parse_mode=ParseMode.HTML)
 
 
@@ -256,18 +256,18 @@ async def process_rep(message: types.Message, command: CommandObject, delta: int
         await message.reply("Нельзя голосовать за одного и того же человека больше 3 раз в день.")
         return
 
-    now = datetime.now(pytz.utc)
+    now_str = datetime.now(pytz.utc).strftime("%Y-%m-%d %H:%M:%S")
 
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE users SET voices = voices - 1, last_vote_at = ? WHERE user_id = ?", (now, voter["user_id"]))
+        await db.execute("UPDATE users SET voices = voices - 1, last_vote_at = ? WHERE user_id = ?", (now_str, voter["user_id"]))
         await db.execute(
             "INSERT INTO reputation_logs (from_user_id, to_user_id, value, created_at) VALUES (?, ?, ?, ?)",
-            (voter["user_id"], target["user_id"], delta, now)
+            (voter["user_id"], target["user_id"], delta, now_str)
         )
         await db.commit()
 
     action_text = "повысили" if delta > 0 else "понизили"
-    target_name = html_quote(target["full_name"])
+    target_name = html.escape(target["full_name"])
     await message.reply(f"Вы успешно {action_text} рейтинг пользователю {target_name}!", parse_mode=ParseMode.HTML)
 
 
@@ -284,12 +284,12 @@ async def cmd_minusrep(message: types.Message, command: CommandObject):
 # ==================== КРОН-ЗАДАЧА (12:00 МСК) ====================
 
 async def daily_voice_distribution():
-    week_ago = datetime.now(pytz.utc) - timedelta(days=7)
+    week_ago_str = (datetime.now(pytz.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "UPDATE users SET voices = voices + 1 WHERE last_vote_at IS NOT NULL AND last_vote_at >= ?",
-            (week_ago,)
+            (week_ago_str,)
         )
         await db.commit()
 
